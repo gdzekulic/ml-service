@@ -98,6 +98,8 @@ class TrainResponse(BaseModel):
     test_samples: Optional[int] = None
     total_samples: Optional[int] = None
     positive_rate: Optional[float] = None
+    scale_pos_weight: Optional[float] = None
+    signal_type_metrics: Optional[dict] = None
     feature_importance_top10: Optional[list] = None
     error: Optional[str] = None
 
@@ -206,6 +208,8 @@ async def metrics():
             for k, v in sorted_imp[:10]
         ],
         "feature_importance_all": {k: round(v, 4) for k, v in sorted_imp},
+        "scale_pos_weight": info.get("scale_pos_weight"),
+        "signal_type_metrics": info.get("signal_type_metrics", {}),
     }
 
 

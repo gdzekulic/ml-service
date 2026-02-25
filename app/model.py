@@ -172,9 +172,11 @@ def train_model() -> dict:
     logger.info(f"Train: {len(X_train)}, Test: {len(X_test)}")
 
     # 4. XGBoost Training (mit Klassen-Balancierung)
+    # sqrt-Daempfung: volle Ratio (0.39) war zu aggressiv → sqrt ergibt ~0.63
     neg_count = int((y_train == 0).sum())
     pos_count = int((y_train == 1).sum())
-    scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
+    raw_ratio = neg_count / pos_count if pos_count > 0 else 1.0
+    scale_pos_weight = float(np.sqrt(raw_ratio))
 
     logger.info(f"Klassen-Balance: pos={pos_count}, neg={neg_count}, scale_pos_weight={scale_pos_weight:.3f}")
 
@@ -301,6 +303,8 @@ def train_model() -> dict:
         "test_samples": len(X_test),
         "total_samples": total_samples,
         "positive_rate": round(float(y.mean()), 4),
+        "scale_pos_weight": round(scale_pos_weight, 4),
+        "signal_type_metrics": signal_type_metrics,
         "feature_importance_top10": [
             {"feature": k, "importance": round(v, 4)}
             for k, v in list(sorted_imp.items())[:10]
