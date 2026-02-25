@@ -41,6 +41,7 @@ DERIVED_FEATURES = [
 ]
 
 CATEGORICAL_FEATURES = {
+    "signal_type": ["BUY", "SELL", "WATCH_BUY", "WATCH_SELL", "NONE"],
     "market_regime": [
         "VOLATILE", "TRENDING_STRONG", "TRENDING_WEAK",
         "RANGING", "SQUEEZE", "TRANSITIONAL", "UNKNOWN",

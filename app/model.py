@@ -171,16 +171,24 @@ def train_model() -> dict:
 
     logger.info(f"Train: {len(X_train)}, Test: {len(X_test)}")
 
-    # 4. XGBoost Training
+    # 4. XGBoost Training (mit Klassen-Balancierung)
+    neg_count = int((y_train == 0).sum())
+    pos_count = int((y_train == 1).sum())
+    scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
+
+    logger.info(f"Klassen-Balance: pos={pos_count}, neg={neg_count}, scale_pos_weight={scale_pos_weight:.3f}")
+
     model = XGBClassifier(
         n_estimators=XGB_N_ESTIMATORS,
         max_depth=XGB_MAX_DEPTH,
         learning_rate=XGB_LEARNING_RATE,
         subsample=XGB_SUBSAMPLE,
         colsample_bytree=XGB_COLSAMPLE_BYTREE,
+        scale_pos_weight=scale_pos_weight,
         eval_metric="logloss",
         use_label_encoder=False,
         random_state=42,
+        early_stopping_rounds=XGB_EARLY_STOPPING,
     )
 
     model.fit(
@@ -199,6 +207,21 @@ def train_model() -> dict:
     f1 = f1_score(y_test, y_pred, zero_division=0)
 
     logger.info(f"Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, F1: {f1:.4f}")
+
+    # Per-Signal-Type Metriken
+    signal_type_metrics = {}
+    if "signal_type" in df.columns:
+        test_signal_types = df.iloc[split_idx:]["signal_type"]
+        for st in test_signal_types.unique():
+            mask = test_signal_types == st
+            if mask.sum() > 0:
+                st_acc = accuracy_score(y_test[mask.values], y_pred[mask.values])
+                signal_type_metrics[st] = {
+                    "count": int(mask.sum()),
+                    "accuracy": round(st_acc, 4),
+                    "positive_rate": round(float(y_test[mask.values].mean()), 4),
+                }
+                logger.info(f"  {st}: Accuracy={st_acc:.4f} (n={mask.sum()}, pos_rate={y_test[mask.values].mean():.2%})")
 
     # 6. Feature Importance
     feature_names = get_feature_names()
@@ -225,6 +248,8 @@ def train_model() -> dict:
         "f1": round(f1, 6),
         "positive_rate_train": round(float(y_train.mean()), 4),
         "positive_rate_test": round(float(y_test.mean()), 4),
+        "scale_pos_weight": round(scale_pos_weight, 4),
+        "signal_type_metrics": signal_type_metrics,
         "feature_importances": sorted_imp,
         "parameters": {
             "n_estimators": XGB_N_ESTIMATORS,
@@ -232,6 +257,7 @@ def train_model() -> dict:
             "learning_rate": XGB_LEARNING_RATE,
             "subsample": XGB_SUBSAMPLE,
             "colsample_bytree": XGB_COLSAMPLE_BYTREE,
+            "scale_pos_weight": round(scale_pos_weight, 4),
         },
     }
 
