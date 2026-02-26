@@ -159,7 +159,7 @@ async def predict_batch_endpoint(request: BatchPredictRequest):
                     confidence=result["probability"],
                     features_used=items[i],
                     probability=result["probability"],
-                    feature_importance_top5=None,
+                    feature_importance_top5=result.get("feature_importance_top5"),
                 )
             except Exception as e:
                 logger.error(f"Batch Prediction-Logging fehlgeschlagen fuer {signal_id}: {e}")

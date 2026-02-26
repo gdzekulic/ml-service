@@ -135,6 +135,7 @@ def predict_batch(items: list) -> list:
             "prediction": "correct" if pred_class == 1 else "incorrect",
             "probability": round(float(proba[1]), 6),
             "model_version": _model_version or "none",
+            "feature_importance_top5": _get_top5_importance(),
         })
 
     return results
