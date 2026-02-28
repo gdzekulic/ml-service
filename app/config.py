@@ -24,7 +24,7 @@ XGB_EARLY_STOPPING = int(os.getenv("XGB_EARLY_STOPPING", "20"))
 
 # Optuna Hyperparameter Tuning
 ENABLE_OPTUNA = os.getenv("ENABLE_OPTUNA", "true").lower() in ("true", "1", "yes")
-OPTUNA_N_TRIALS = int(os.getenv("OPTUNA_N_TRIALS", "30"))
+OPTUNA_N_TRIALS = int(os.getenv("OPTUNA_N_TRIALS", "15"))
 
 # Multi-Regime Modelle
 ENABLE_REGIME_MODELS = os.getenv("ENABLE_REGIME_MODELS", "true").lower() in ("true", "1", "yes")

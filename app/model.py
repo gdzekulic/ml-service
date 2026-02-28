@@ -1,6 +1,5 @@
 """XGBoost Model Training und Prediction."""
 
-import os
 import json
 import logging
 from datetime import datetime
@@ -8,12 +7,10 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import pandas as pd
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import shap
-
 import optuna
+import shap
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from xgboost import XGBClassifier
 
 from app.config import (
     MODEL_DIR, MIN_TRAINING_SAMPLES, TRAIN_TEST_SPLIT,
@@ -36,7 +33,6 @@ _regime_models = {}  # {"TRENDING_STRONG": model, "RANGING": model, ...}
 
 
 def get_model():
-    global _model
     return _model
 
 
@@ -107,39 +103,22 @@ def predict_single(data: dict) -> dict:
 
     features = build_features_from_dict(data)
     feature_names = get_feature_names()
-
     X = np.array([[features.get(f, 0) for f in feature_names]])
 
-    # Global Model Prediction
     global_proba = float(_model.predict_proba(X)[0][1])
-
-    # Regime-Ensemble
-    regime = str(data.get("market_regime", "")).upper()
-    used_regime = False
-    if regime in _regime_models:
-        try:
-            regime_proba = float(_regime_models[regime].predict_proba(X)[0][1])
-            probability = (1 - REGIME_WEIGHT) * global_proba + REGIME_WEIGHT * regime_proba
-            used_regime = True
-        except Exception:
-            probability = global_proba
-    else:
-        probability = global_proba
-
-    prediction = "correct" if probability >= 0.5 else "incorrect"
-    top5 = _get_top5_importance()
+    probability, used_regime = _blend_with_regime(global_proba, X, data.get("market_regime", ""))
 
     return {
-        "prediction": prediction,
+        "prediction": "correct" if probability >= 0.5 else "incorrect",
         "probability": round(probability, 6),
         "model_version": _model_version or "none",
-        "regime_model_used": regime if used_regime else None,
-        "feature_importance_top5": top5,
+        "regime_model_used": used_regime,
+        "feature_importance_top5": _get_top5_importance(),
     }
 
 
 def predict_batch(items: list) -> list:
-    """Batch-Vorhersage fuer mehrere Signale."""
+    """Batch-Vorhersage fuer mehrere Signale (vektorisiert)."""
     if _model is None:
         return [
             {"error": "Kein Modell geladen", "prediction": "unknown", "probability": 0.5}
@@ -147,25 +126,20 @@ def predict_batch(items: list) -> list:
         ]
 
     feature_names = get_feature_names()
+    top5 = _get_top5_importance()
+
+    # Features einmal fuer alle Items bauen
+    all_features = [build_features_from_dict(data) for data in items]
+    X_all = np.array([[f.get(name, 0) for name in feature_names] for f in all_features])
+
+    # Globale Prediction in einem Aufruf
+    global_probas = _model.predict_proba(X_all)[:, 1]
+
     results = []
-
-    for data in items:
-        features = build_features_from_dict(data)
-        X = np.array([[features.get(f, 0) for f in feature_names]])
-
-        global_proba = float(_model.predict_proba(X)[0][1])
-
-        regime = str(data.get("market_regime", "")).upper()
-        used_regime = False
-        if regime in _regime_models:
-            try:
-                regime_proba = float(_regime_models[regime].predict_proba(X)[0][1])
-                probability = (1 - REGIME_WEIGHT) * global_proba + REGIME_WEIGHT * regime_proba
-                used_regime = True
-            except Exception:
-                probability = global_proba
-        else:
-            probability = global_proba
+    for i, data in enumerate(items):
+        probability, used_regime = _blend_with_regime(
+            float(global_probas[i]), X_all[i:i+1], data.get("market_regime", "")
+        )
 
         results.append({
             "ticker": data.get("ticker", ""),
@@ -173,11 +147,27 @@ def predict_batch(items: list) -> list:
             "prediction": "correct" if probability >= 0.5 else "incorrect",
             "probability": round(probability, 6),
             "model_version": _model_version or "none",
-            "regime_model_used": regime if used_regime else None,
-            "feature_importance_top5": _get_top5_importance(),
+            "regime_model_used": used_regime,
+            "feature_importance_top5": top5,
         })
 
     return results
+
+
+def _blend_with_regime(global_proba: float, X_row: np.ndarray, market_regime: str) -> tuple:
+    """Blende globale Prediction mit Regime-Modell.
+
+    Returns (probability, regime_name_or_None).
+    """
+    regime = str(market_regime).upper()
+    if regime in _regime_models:
+        try:
+            regime_proba = float(_regime_models[regime].predict_proba(X_row)[0][1])
+            blended = (1 - REGIME_WEIGHT) * global_proba + REGIME_WEIGHT * regime_proba
+            return blended, regime
+        except Exception:
+            pass
+    return global_proba, None
 
 
 def train_model() -> dict:
@@ -204,12 +194,27 @@ def train_model() -> dict:
 
     logger.info(f"Features: {X.shape[1]}, Positive Rate: {y.mean():.2%}")
 
-    # 3. Chronologischer Split
-    split_idx = int(len(df) * TRAIN_TEST_SPLIT)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-
-    logger.info(f"Train: {len(X_train)}, Test: {len(X_test)}")
+    # 3. Chronologischer Split: Train / Validation / Test
+    #    Optuna tuned auf Val, finale Metriken nur auf Test (kein Data Leakage)
+    if ENABLE_OPTUNA and len(df) >= 100:
+        split_train = int(len(df) * 0.6)
+        split_val = int(len(df) * 0.8)
+        X_train = X.iloc[:split_train]
+        X_val = X.iloc[split_train:split_val]
+        X_test = X.iloc[split_val:]
+        y_train = y.iloc[:split_train]
+        y_val = y.iloc[split_train:split_val]
+        y_test = y.iloc[split_val:]
+        split_idx = split_train
+        test_start_idx = split_val
+        logger.info(f"3-Way Split: Train={len(X_train)}, Val={len(X_val)}, Test={len(X_test)}")
+    else:
+        split_idx = int(len(df) * TRAIN_TEST_SPLIT)
+        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        X_val, y_val = X_test, y_test  # Kein Optuna → Val=Test ist ok
+        test_start_idx = split_idx
+        logger.info(f"2-Way Split: Train={len(X_train)}, Test={len(X_test)}")
 
     # 4. XGBoost Training (mit Klassen-Balancierung)
     # sqrt-Daempfung: volle Ratio (0.39) war zu aggressiv → sqrt ergibt ~0.63
@@ -222,22 +227,16 @@ def train_model() -> dict:
 
     # Optuna Hyperparameter Tuning oder Default-Parameter
     used_optuna = False
+    early_stopping = XGB_EARLY_STOPPING
+
     if ENABLE_OPTUNA and len(X_train) >= 100:
         try:
             logger.info(f"Starte Optuna Tuning ({OPTUNA_N_TRIALS} Trials)...")
-            best_params = _optuna_tune(X_train, y_train, X_test, y_test, scale_pos_weight)
+            best_params = _optuna_tune(X_train, y_train, X_val, y_val, scale_pos_weight)
             used_optuna = True
-            model = XGBClassifier(
-                **best_params,
-                scale_pos_weight=scale_pos_weight,
-                eval_metric="logloss",
-                use_label_encoder=False,
-                random_state=42,
-                early_stopping_rounds=20,
-            )
+            early_stopping = 20
         except Exception as e:
             logger.warning(f"Optuna fehlgeschlagen, nutze Defaults: {e}")
-            used_optuna = False
 
     if not used_optuna:
         best_params = {
@@ -247,24 +246,24 @@ def train_model() -> dict:
             "subsample": XGB_SUBSAMPLE,
             "colsample_bytree": XGB_COLSAMPLE_BYTREE,
         }
-        model = XGBClassifier(
-            **best_params,
-            scale_pos_weight=scale_pos_weight,
-            eval_metric="logloss",
-            use_label_encoder=False,
-            random_state=42,
-            early_stopping_rounds=XGB_EARLY_STOPPING,
-        )
+
+    model = XGBClassifier(
+        **best_params,
+        scale_pos_weight=scale_pos_weight,
+        eval_metric="logloss",
+        use_label_encoder=False,
+        random_state=42,
+        early_stopping_rounds=early_stopping,
+    )
 
     model.fit(
         X_train, y_train,
-        eval_set=[(X_test, y_test)],
+        eval_set=[(X_val, y_val)],
         verbose=False,
     )
 
     # 5. Metriken
     y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
 
     acc = accuracy_score(y_test, y_pred)
     prec = precision_score(y_test, y_pred, zero_division=0)
@@ -276,7 +275,7 @@ def train_model() -> dict:
     # Per-Signal-Type Metriken
     signal_type_metrics = {}
     if "signal_type" in df.columns:
-        test_signal_types = df.iloc[split_idx:]["signal_type"]
+        test_signal_types = df.iloc[test_start_idx:]["signal_type"]
         for st in test_signal_types.unique():
             mask = test_signal_types == st
             if mask.sum() > 0:
@@ -293,11 +292,12 @@ def train_model() -> dict:
     importances = dict(zip(feature_names, model.feature_importances_.tolist()))
     sorted_imp = dict(sorted(importances.items(), key=lambda x: x[1], reverse=True))
 
-    # 6b. SHAP-basierte Feature Importance
+    # 6b. SHAP-basierte Feature Importance (auf Sample begrenzt fuer RAM-Schutz)
     shap_imp = {}
     try:
         explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_test)
+        shap_sample = X_test.sample(min(200, len(X_test)), random_state=42) if len(X_test) > 200 else X_test
+        shap_values = explainer.shap_values(shap_sample)
         shap_mean_abs = np.abs(shap_values).mean(axis=0)
         shap_imp = dict(zip(feature_names, shap_mean_abs.tolist()))
         shap_imp = dict(sorted(shap_imp.items(), key=lambda x: x[1], reverse=True))
@@ -346,7 +346,7 @@ def train_model() -> dict:
     try:
         insert_model_performance(
             model_version=version,
-            training_samples=total_samples,
+            training_samples=split_idx,
             accuracy=acc,
             precision_score=prec,
             recall_score=rec,
@@ -364,6 +364,7 @@ def train_model() -> dict:
 
     # 9. Regime-spezifische Modelle trainieren
     regime_models_trained = {}
+    _trained_regime_models = {}
     if ENABLE_REGIME_MODELS and "signal_type" in df.columns and "market_regime" in df.columns:
         regime_col = df["market_regime"].fillna("UNKNOWN").str.upper()
         for regime_name in regime_col.unique():
@@ -404,6 +405,7 @@ def train_model() -> dict:
 
             regime_path = model_dir / f"model_{version}_regime_{regime_name}.joblib"
             joblib.dump(r_model, regime_path)
+            _trained_regime_models[regime_name] = r_model
 
             regime_models_trained[regime_name] = {
                 "train_samples": n_train, "test_samples": n_test,
@@ -422,11 +424,7 @@ def train_model() -> dict:
     _model_version = version
     _model_info = info
     _feature_importances = sorted_imp
-    _regime_models = {}
-    for rname in regime_models_trained:
-        rpath = model_dir / f"model_{version}_regime_{rname}.joblib"
-        if rpath.exists():
-            _regime_models[rname] = joblib.load(rpath)
+    _regime_models = _trained_regime_models
 
     # Alte Modelle aufraeumen (behalte letzte 5)
     _cleanup_old_models(model_dir, keep=5)
@@ -457,12 +455,12 @@ def train_model() -> dict:
     }
 
 
-def _optuna_tune(X_train, y_train, X_test, y_test, scale_pos_weight: float) -> dict:
-    """Finde optimale Hyperparameter mit Optuna (Bayesian Optimization)."""
+def _optuna_tune(X_train, y_train, X_val, y_val, scale_pos_weight: float) -> dict:
+    """Finde optimale Hyperparameter mit Optuna auf dem Validation-Set."""
 
     def objective(trial):
         params = {
-            "n_estimators": trial.suggest_int("n_estimators", 100, 500, step=50),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 300, step=50),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "subsample": trial.suggest_float("subsample", 0.6, 1.0),
@@ -481,9 +479,9 @@ def _optuna_tune(X_train, y_train, X_test, y_test, scale_pos_weight: float) -> d
             random_state=42,
             early_stopping_rounds=20,
         )
-        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-        y_pred = model.predict(X_test)
-        return f1_score(y_test, y_pred, zero_division=0)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        y_pred = model.predict(X_val)
+        return f1_score(y_val, y_pred, zero_division=0)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="maximize", study_name="xgb_tuning")
