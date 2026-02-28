@@ -351,9 +351,13 @@ def train_model() -> dict:
             precision_score=prec,
             recall_score=rec,
             f1_score=f1,
-            features={"names": feature_names, "importances": sorted_imp},
+            features={
+                "names": feature_names,
+                "importances": sorted_imp,
+                "shap_importances": shap_imp,
+            },
             parameters=info["parameters"],
-            notes=f"Train: {split_idx}, Test: {len(X_test)}, Positive Rate: {y.mean():.2%}",
+            notes=f"Train: {split_idx}, Test: {len(X_test)}, Positive Rate: {y.mean():.2%}, Optuna: {used_optuna}",
         )
     except Exception as e:
         logger.error(f"DB-Logging fehlgeschlagen: {e}")
