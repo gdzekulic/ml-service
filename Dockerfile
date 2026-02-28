@@ -1,3 +1,12 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Pip-Packages in separatem Stage bauen (begrenzt RAM-Spitze)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -7,9 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python Dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Vorgebaute Python-Packages kopieren (kein pip install zur Laufzeit)
+COPY --from=builder /install /usr/local
 
 # App Code
 COPY app/ ./app/
