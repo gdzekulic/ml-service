@@ -83,6 +83,7 @@ class PredictResponse(BaseModel):
     prediction: str
     probability: float
     model_version: str
+    regime_model_used: Optional[str] = None
     feature_importance_top5: list = []
     error: Optional[str] = None
 
@@ -99,8 +100,11 @@ class TrainResponse(BaseModel):
     total_samples: Optional[int] = None
     positive_rate: Optional[float] = None
     scale_pos_weight: Optional[float] = None
+    optuna_tuned: Optional[bool] = None
     signal_type_metrics: Optional[dict] = None
     feature_importance_top10: Optional[list] = None
+    shap_importance_top10: Optional[list] = None
+    regime_models: Optional[dict] = None
     error: Optional[str] = None
 
 
