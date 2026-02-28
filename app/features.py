@@ -66,6 +66,22 @@ def build_features_from_dict(data: dict) -> dict:
     features["hour_of_day"] = int(data.get("hour_of_day", 12))
     features["day_of_week_num"] = _parse_day_of_week(data.get("day_of_week", 2))
 
+    # Phase 2: Erweiterte abgeleitete Features
+    bs = features["buy_score"]
+    ss = features["sell_score"]
+    features["score_ratio"] = bs / (bs + ss) if (bs + ss) > 0 else 0.5
+    features["score_total"] = bs + ss
+    features["rsi_extreme"] = abs(features["rsi"] - 50)
+    features["stoch_extreme"] = abs(features["stoch_k"] - 50)
+    features["bb_position_extreme"] = abs(features["bb_percent_b"] - 0.5)
+    features["macd_abs"] = abs(features["macd"])
+    features["momentum_abs"] = abs(features["momentum"])
+    features["atr_momentum_interaction"] = features["atr_percent"] * abs(features["momentum"])
+    rsi = features["rsi"]
+    stoch = features["stoch_k"]
+    features["rsi_stoch_agreement"] = 1.0 if (rsi > 70 and stoch > 80) or (rsi < 30 and stoch < 20) else 0.0
+    features["trend_strength"] = abs(features["ema_spread"])
+
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
         actual_value = str(data.get(cat_name, "")).lower()
@@ -125,6 +141,24 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
         features["day_of_week_num"] = df["day_of_week"].apply(_parse_day_of_week).fillna(2).astype(int)
     else:
         features["day_of_week_num"] = 2
+
+    # Phase 2: Erweiterte abgeleitete Features
+    bs = features["buy_score"]
+    ss = features["sell_score"]
+    score_sum = bs + ss
+    features["score_ratio"] = np.where(score_sum > 0, bs / score_sum, 0.5)
+    features["score_total"] = score_sum
+    features["rsi_extreme"] = (features["rsi"] - 50).abs()
+    features["stoch_extreme"] = (features["stoch_k"] - 50).abs()
+    features["bb_position_extreme"] = (features["bb_percent_b"] - 0.5).abs()
+    features["macd_abs"] = features["macd"].abs()
+    features["momentum_abs"] = features["momentum"].abs()
+    features["atr_momentum_interaction"] = features["atr_percent"] * features["momentum"].abs()
+    features["rsi_stoch_agreement"] = (
+        ((features["rsi"] > 70) & (features["stoch_k"] > 80)) |
+        ((features["rsi"] < 30) & (features["stoch_k"] < 20))
+    ).astype(float)
+    features["trend_strength"] = features["ema_spread"].abs()
 
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():

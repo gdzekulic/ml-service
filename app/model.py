@@ -11,11 +11,16 @@ import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import shap
+
+import optuna
 
 from app.config import (
     MODEL_DIR, MIN_TRAINING_SAMPLES, TRAIN_TEST_SPLIT,
     XGB_N_ESTIMATORS, XGB_MAX_DEPTH, XGB_LEARNING_RATE,
     XGB_SUBSAMPLE, XGB_COLSAMPLE_BYTREE, XGB_EARLY_STOPPING,
+    ENABLE_OPTUNA, OPTUNA_N_TRIALS,
+    ENABLE_REGIME_MODELS, MIN_REGIME_SAMPLES, REGIME_WEIGHT,
 )
 from app.features import build_features_from_df, build_features_from_dict, get_feature_names
 from app.database import load_training_data, insert_model_performance
@@ -27,6 +32,7 @@ _model = None
 _model_version = None
 _model_info = {}
 _feature_importances = {}
+_regime_models = {}  # {"TRENDING_STRONG": model, "RANGING": model, ...}
 
 
 def get_model():
@@ -48,7 +54,7 @@ def get_feature_importances():
 
 def load_latest_model():
     """Lade das neueste Modell beim Start."""
-    global _model, _model_version, _model_info, _feature_importances
+    global _model, _model_version, _model_info, _feature_importances, _regime_models
 
     model_dir = Path(MODEL_DIR)
     if not model_dir.exists():
@@ -57,7 +63,7 @@ def load_latest_model():
         return False
 
     # Finde neuestes Modell
-    model_files = sorted(model_dir.glob("model_*.joblib"), reverse=True)
+    model_files = sorted(model_dir.glob("model_v*.joblib"), reverse=True)
     if not model_files:
         logger.info("Kein gespeichertes Modell gefunden")
         return False
@@ -77,7 +83,17 @@ def load_latest_model():
             _feature_importances = _extract_importances(_model)
             _model_info = {"version": _model_version}
 
-        logger.info(f"Modell geladen: {_model_version} ({latest})")
+        # Regime-Modelle laden
+        _regime_models = {}
+        regime_pattern = f"model_{_model_version}_regime_*.joblib"
+        for regime_file in model_dir.glob(regime_pattern):
+            regime_name = regime_file.stem.split("_regime_")[-1]
+            try:
+                _regime_models[regime_name] = joblib.load(regime_file)
+            except Exception as e:
+                logger.warning(f"Regime-Modell {regime_name} konnte nicht geladen werden: {e}")
+
+        logger.info(f"Modell geladen: {_model_version} ({latest}), Regime-Modelle: {list(_regime_models.keys()) or 'keine'}")
         return True
     except Exception as e:
         logger.error(f"Fehler beim Laden: {e}")
@@ -94,19 +110,30 @@ def predict_single(data: dict) -> dict:
 
     X = np.array([[features.get(f, 0) for f in feature_names]])
 
-    proba = _model.predict_proba(X)[0]
-    pred_class = int(_model.predict(X)[0])
+    # Global Model Prediction
+    global_proba = float(_model.predict_proba(X)[0][1])
 
-    probability = float(proba[1])  # P(correct)
-    prediction = "correct" if pred_class == 1 else "incorrect"
+    # Regime-Ensemble
+    regime = str(data.get("market_regime", "")).upper()
+    used_regime = False
+    if regime in _regime_models:
+        try:
+            regime_proba = float(_regime_models[regime].predict_proba(X)[0][1])
+            probability = (1 - REGIME_WEIGHT) * global_proba + REGIME_WEIGHT * regime_proba
+            used_regime = True
+        except Exception:
+            probability = global_proba
+    else:
+        probability = global_proba
 
-    # Top-5 Feature Importance
+    prediction = "correct" if probability >= 0.5 else "incorrect"
     top5 = _get_top5_importance()
 
     return {
         "prediction": prediction,
         "probability": round(probability, 6),
         "model_version": _model_version or "none",
+        "regime_model_used": regime if used_regime else None,
         "feature_importance_top5": top5,
     }
 
@@ -126,15 +153,27 @@ def predict_batch(items: list) -> list:
         features = build_features_from_dict(data)
         X = np.array([[features.get(f, 0) for f in feature_names]])
 
-        proba = _model.predict_proba(X)[0]
-        pred_class = int(_model.predict(X)[0])
+        global_proba = float(_model.predict_proba(X)[0][1])
+
+        regime = str(data.get("market_regime", "")).upper()
+        used_regime = False
+        if regime in _regime_models:
+            try:
+                regime_proba = float(_regime_models[regime].predict_proba(X)[0][1])
+                probability = (1 - REGIME_WEIGHT) * global_proba + REGIME_WEIGHT * regime_proba
+                used_regime = True
+            except Exception:
+                probability = global_proba
+        else:
+            probability = global_proba
 
         results.append({
             "ticker": data.get("ticker", ""),
             "signal_type": data.get("signal_type", ""),
-            "prediction": "correct" if pred_class == 1 else "incorrect",
-            "probability": round(float(proba[1]), 6),
+            "prediction": "correct" if probability >= 0.5 else "incorrect",
+            "probability": round(probability, 6),
             "model_version": _model_version or "none",
+            "regime_model_used": regime if used_regime else None,
             "feature_importance_top5": _get_top5_importance(),
         })
 
@@ -143,7 +182,7 @@ def predict_batch(items: list) -> list:
 
 def train_model() -> dict:
     """Trainiere neues XGBoost-Modell."""
-    global _model, _model_version, _model_info, _feature_importances
+    global _model, _model_version, _model_info, _feature_importances, _regime_models
 
     logger.info("Starte Training...")
 
@@ -181,18 +220,41 @@ def train_model() -> dict:
 
     logger.info(f"Klassen-Balance: pos={pos_count}, neg={neg_count}, scale_pos_weight={scale_pos_weight:.3f}")
 
-    model = XGBClassifier(
-        n_estimators=XGB_N_ESTIMATORS,
-        max_depth=XGB_MAX_DEPTH,
-        learning_rate=XGB_LEARNING_RATE,
-        subsample=XGB_SUBSAMPLE,
-        colsample_bytree=XGB_COLSAMPLE_BYTREE,
-        scale_pos_weight=scale_pos_weight,
-        eval_metric="logloss",
-        use_label_encoder=False,
-        random_state=42,
-        early_stopping_rounds=XGB_EARLY_STOPPING,
-    )
+    # Optuna Hyperparameter Tuning oder Default-Parameter
+    used_optuna = False
+    if ENABLE_OPTUNA and len(X_train) >= 100:
+        try:
+            logger.info(f"Starte Optuna Tuning ({OPTUNA_N_TRIALS} Trials)...")
+            best_params = _optuna_tune(X_train, y_train, X_test, y_test, scale_pos_weight)
+            used_optuna = True
+            model = XGBClassifier(
+                **best_params,
+                scale_pos_weight=scale_pos_weight,
+                eval_metric="logloss",
+                use_label_encoder=False,
+                random_state=42,
+                early_stopping_rounds=20,
+            )
+        except Exception as e:
+            logger.warning(f"Optuna fehlgeschlagen, nutze Defaults: {e}")
+            used_optuna = False
+
+    if not used_optuna:
+        best_params = {
+            "n_estimators": XGB_N_ESTIMATORS,
+            "max_depth": XGB_MAX_DEPTH,
+            "learning_rate": XGB_LEARNING_RATE,
+            "subsample": XGB_SUBSAMPLE,
+            "colsample_bytree": XGB_COLSAMPLE_BYTREE,
+        }
+        model = XGBClassifier(
+            **best_params,
+            scale_pos_weight=scale_pos_weight,
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=42,
+            early_stopping_rounds=XGB_EARLY_STOPPING,
+        )
 
     model.fit(
         X_train, y_train,
@@ -226,10 +288,24 @@ def train_model() -> dict:
                 }
                 logger.info(f"  {st}: Accuracy={st_acc:.4f} (n={mask.sum()}, pos_rate={y_test[mask.values].mean():.2%})")
 
-    # 6. Feature Importance
+    # 6. Feature Importance (XGBoost native)
     feature_names = get_feature_names()
     importances = dict(zip(feature_names, model.feature_importances_.tolist()))
     sorted_imp = dict(sorted(importances.items(), key=lambda x: x[1], reverse=True))
+
+    # 6b. SHAP-basierte Feature Importance
+    shap_imp = {}
+    try:
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test)
+        shap_mean_abs = np.abs(shap_values).mean(axis=0)
+        shap_imp = dict(zip(feature_names, shap_mean_abs.tolist()))
+        shap_imp = dict(sorted(shap_imp.items(), key=lambda x: x[1], reverse=True))
+        logger.info("SHAP Top-10: " + ", ".join(
+            f"{k}={v:.4f}" for k, v in list(shap_imp.items())[:10]
+        ))
+    except Exception as e:
+        logger.warning(f"SHAP-Berechnung fehlgeschlagen: {e}")
 
     # 7. Version + Speichern
     version = f"v{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -254,13 +330,11 @@ def train_model() -> dict:
         "scale_pos_weight": round(scale_pos_weight, 4),
         "signal_type_metrics": signal_type_metrics,
         "feature_importances": sorted_imp,
+        "shap_importances": shap_imp,
         "parameters": {
-            "n_estimators": XGB_N_ESTIMATORS,
-            "max_depth": XGB_MAX_DEPTH,
-            "learning_rate": XGB_LEARNING_RATE,
-            "subsample": XGB_SUBSAMPLE,
-            "colsample_bytree": XGB_COLSAMPLE_BYTREE,
+            **{k: round(v, 6) if isinstance(v, float) else v for k, v in best_params.items()},
             "scale_pos_weight": round(scale_pos_weight, 4),
+            "optuna_tuned": used_optuna,
         },
     }
 
@@ -284,11 +358,71 @@ def train_model() -> dict:
     except Exception as e:
         logger.error(f"DB-Logging fehlgeschlagen: {e}")
 
-    # 9. Globalen State aktualisieren
+    # 9. Regime-spezifische Modelle trainieren
+    regime_models_trained = {}
+    if ENABLE_REGIME_MODELS and "signal_type" in df.columns and "market_regime" in df.columns:
+        regime_col = df["market_regime"].fillna("UNKNOWN").str.upper()
+        for regime_name in regime_col.unique():
+            if regime_name in ("UNKNOWN", ""):
+                continue
+            regime_mask = regime_col == regime_name
+            regime_train_mask = regime_mask.iloc[:split_idx]
+            regime_test_mask = regime_mask.iloc[split_idx:]
+
+            n_train = int(regime_train_mask.sum())
+            n_test = int(regime_test_mask.sum())
+
+            if n_train < MIN_REGIME_SAMPLES or n_test < 10:
+                logger.info(f"  Regime {regime_name}: uebersprungen (train={n_train}, test={n_test})")
+                continue
+
+            X_r_train = X_train[regime_train_mask.values]
+            y_r_train = y_train[regime_train_mask.values]
+            X_r_test = X_test[regime_test_mask.values]
+            y_r_test = y_test[regime_test_mask.values]
+
+            r_neg = int((y_r_train == 0).sum())
+            r_pos = int((y_r_train == 1).sum())
+            r_spw = float(np.sqrt(r_neg / r_pos)) if r_pos > 0 else 1.0
+
+            r_model = XGBClassifier(
+                n_estimators=150, max_depth=4, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8,
+                scale_pos_weight=r_spw,
+                eval_metric="logloss", use_label_encoder=False,
+                random_state=42, early_stopping_rounds=15,
+            )
+            r_model.fit(X_r_train, y_r_train, eval_set=[(X_r_test, y_r_test)], verbose=False)
+
+            r_pred = r_model.predict(X_r_test)
+            r_acc = accuracy_score(y_r_test, r_pred)
+            r_f1 = f1_score(y_r_test, r_pred, zero_division=0)
+
+            regime_path = model_dir / f"model_{version}_regime_{regime_name}.joblib"
+            joblib.dump(r_model, regime_path)
+
+            regime_models_trained[regime_name] = {
+                "train_samples": n_train, "test_samples": n_test,
+                "accuracy": round(r_acc, 4), "f1": round(r_f1, 4),
+            }
+            logger.info(f"  Regime {regime_name}: Acc={r_acc:.4f}, F1={r_f1:.4f} (train={n_train}, test={n_test})")
+
+    info["regime_models"] = regime_models_trained
+
+    # Info-JSON nochmal speichern (mit Regime-Daten)
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=2)
+
+    # 10. Globalen State aktualisieren
     _model = model
     _model_version = version
     _model_info = info
     _feature_importances = sorted_imp
+    _regime_models = {}
+    for rname in regime_models_trained:
+        rpath = model_dir / f"model_{version}_regime_{rname}.joblib"
+        if rpath.exists():
+            _regime_models[rname] = joblib.load(rpath)
 
     # Alte Modelle aufraeumen (behalte letzte 5)
     _cleanup_old_models(model_dir, keep=5)
@@ -305,12 +439,56 @@ def train_model() -> dict:
         "total_samples": total_samples,
         "positive_rate": round(float(y.mean()), 4),
         "scale_pos_weight": round(scale_pos_weight, 4),
+        "optuna_tuned": used_optuna,
         "signal_type_metrics": signal_type_metrics,
         "feature_importance_top10": [
             {"feature": k, "importance": round(v, 4)}
             for k, v in list(sorted_imp.items())[:10]
         ],
+        "shap_importance_top10": [
+            {"feature": k, "shap_value": round(v, 4)}
+            for k, v in list(shap_imp.items())[:10]
+        ],
+        "regime_models": regime_models_trained,
     }
+
+
+def _optuna_tune(X_train, y_train, X_test, y_test, scale_pos_weight: float) -> dict:
+    """Finde optimale Hyperparameter mit Optuna (Bayesian Optimization)."""
+
+    def objective(trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 100, 500, step=50),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "gamma": trial.suggest_float("gamma", 0.0, 5.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        }
+
+        model = XGBClassifier(
+            **params,
+            scale_pos_weight=scale_pos_weight,
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=42,
+            early_stopping_rounds=20,
+        )
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+        y_pred = model.predict(X_test)
+        return f1_score(y_test, y_pred, zero_division=0)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction="maximize", study_name="xgb_tuning")
+    study.optimize(objective, n_trials=OPTUNA_N_TRIALS, show_progress_bar=False)
+
+    logger.info(f"Optuna best F1: {study.best_value:.4f} nach {len(study.trials)} Trials")
+    logger.info(f"Optuna best params: {study.best_params}")
+
+    return study.best_params
 
 
 def _extract_importances(model) -> dict:
@@ -333,13 +511,22 @@ def _get_top5_importance() -> list:
 
 def _cleanup_old_models(model_dir: Path, keep: int = 5):
     """Loesche alte Modelle, behalte die neuesten."""
-    model_files = sorted(model_dir.glob("model_*.joblib"), reverse=True)
-    for old_model in model_files[keep:]:
+    # Nur Haupt-Modelle (nicht regime_*) fuer Sortierung
+    model_files = sorted(model_dir.glob("model_v*.joblib"), reverse=True)
+    # Regime-Modelle rausfiltern
+    main_models = [f for f in model_files if "_regime_" not in f.name]
+
+    for old_model in main_models[keep:]:
+        version_prefix = old_model.stem  # z.B. "model_v20260228_120000"
         try:
             old_model.unlink()
             info_file = old_model.with_suffix(".json")
             if info_file.exists():
                 info_file.unlink()
+            # Zugehoerige Regime-Modelle loeschen
+            for regime_file in model_dir.glob(f"{version_prefix}_regime_*.joblib"):
+                regime_file.unlink()
+                logger.info(f"Regime-Modell geloescht: {regime_file.name}")
             logger.info(f"Altes Modell geloescht: {old_model.name}")
         except Exception as e:
             logger.warning(f"Konnte {old_model.name} nicht loeschen: {e}")

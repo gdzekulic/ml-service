@@ -22,6 +22,15 @@ XGB_SUBSAMPLE = float(os.getenv("XGB_SUBSAMPLE", "0.8"))
 XGB_COLSAMPLE_BYTREE = float(os.getenv("XGB_COLSAMPLE_BYTREE", "0.8"))
 XGB_EARLY_STOPPING = int(os.getenv("XGB_EARLY_STOPPING", "20"))
 
+# Optuna Hyperparameter Tuning
+ENABLE_OPTUNA = os.getenv("ENABLE_OPTUNA", "true").lower() in ("true", "1", "yes")
+OPTUNA_N_TRIALS = int(os.getenv("OPTUNA_N_TRIALS", "30"))
+
+# Multi-Regime Modelle
+ENABLE_REGIME_MODELS = os.getenv("ENABLE_REGIME_MODELS", "true").lower() in ("true", "1", "yes")
+MIN_REGIME_SAMPLES = int(os.getenv("MIN_REGIME_SAMPLES", "50"))
+REGIME_WEIGHT = float(os.getenv("REGIME_WEIGHT", "0.3"))  # 30% Regime, 70% Global
+
 # Feature-Listen
 NUMERIC_FEATURES = [
     "buy_score", "sell_score", "rsi", "stoch_k", "stoch_d",
@@ -38,6 +47,11 @@ BOOLEAN_FEATURES = [
 DERIVED_FEATURES = [
     "score_spread", "stoch_diff", "ema_spread",
     "bb_squeeze", "hour_of_day", "day_of_week_num",
+    # Phase 2: Erweiterte abgeleitete Features
+    "score_ratio", "score_total",
+    "rsi_extreme", "stoch_extreme", "bb_position_extreme",
+    "macd_abs", "momentum_abs",
+    "atr_momentum_interaction", "rsi_stoch_agreement", "trend_strength",
 ]
 
 CATEGORICAL_FEATURES = {
