@@ -11,7 +11,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 # Model
 MODEL_DIR = os.getenv("MODEL_DIR", "/app/models")
-MIN_TRAINING_SAMPLES = int(os.getenv("MIN_TRAINING_SAMPLES", "8"))
+MIN_TRAINING_SAMPLES = int(os.getenv("MIN_TRAINING_SAMPLES", "200"))
 TRAIN_TEST_SPLIT = float(os.getenv("TRAIN_TEST_SPLIT", "0.8"))
 
 # XGBoost Defaults
