@@ -38,12 +38,14 @@ NUMERIC_FEATURES = [
     "ema20", "ema50", "price_at_signal", "risk_reward",
     "confidence", "signal_strength",
     "score_15min_buy", "score_15min_sell",
+    "fear_greed_index", "news_sentiment_score", "news_count",
 ]
 
 BOOLEAN_FEATURES = [
     "price_vs_ema20", "price_vs_ema50",
     "rsi_divergence_bull", "rsi_divergence_bear",
     "mtf_alignment",
+    "company_news_found",
 ]
 
 DERIVED_FEATURES = [
@@ -59,6 +61,10 @@ DERIVED_FEATURES = [
     "ema_alignment", "score_dominance",
     "signal_confidence_product", "bb_atr_interaction",
     "rsi_momentum_agreement",
+    # Phase 4: Sentiment-Features
+    "fear_greed_normalized",
+    "sentiment_momentum_agreement",
+    "sentiment_regime_interaction",
 ]
 
 CATEGORICAL_FEATURES = {

@@ -50,6 +50,7 @@ def load_training_data() -> pd.DataFrame:
             market_regime, trend_direction,
             exchange, sector, mtf_alignment,
             score_15min_buy, score_15min_sell,
+            fear_greed_index, news_sentiment_score, news_count, company_news_found,
             day_of_week, time_of_day,
             was_correct
         FROM signals_extended

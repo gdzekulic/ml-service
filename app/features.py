@@ -15,6 +15,11 @@ DAY_MAP = {
     "mo": 0, "di": 1, "mi": 2, "do": 3, "fr": 4, "sa": 5, "so": 6,
 }
 
+# Per-feature defaults for numeric features (0.0 unless specified here)
+NUMERIC_DEFAULTS = {
+    "fear_greed_index": 50.0,
+}
+
 
 def _safe_float(val, default=0.0) -> float:
     if val is None:
@@ -41,7 +46,7 @@ def build_features_from_dict(data: dict) -> dict:
 
     # Numerische Features
     for f in NUMERIC_FEATURES:
-        features[f] = _safe_float(data.get(f))
+        features[f] = _safe_float(data.get(f), default=NUMERIC_DEFAULTS.get(f, 0.0))
 
     # Boolean Features → 0/1
     for f in BOOLEAN_FEATURES:
@@ -66,8 +71,9 @@ def build_features_from_dict(data: dict) -> dict:
     # Phase 2: Erweiterte abgeleitete Features
     bs = features["buy_score"]
     ss = features["sell_score"]
-    features["score_ratio"] = bs / (bs + ss) if (bs + ss) > 0 else 0.5
-    features["score_total"] = bs + ss
+    score_sum = bs + ss
+    features["score_ratio"] = bs / score_sum if score_sum > 0 else 0.5
+    features["score_total"] = score_sum
     features["rsi_extreme"] = abs(features["rsi"] - 50)
     features["stoch_extreme"] = abs(features["stoch_k"] - 50)
     features["bb_position_extreme"] = abs(features["bb_percent_b"] - 0.5)
@@ -85,7 +91,7 @@ def build_features_from_dict(data: dict) -> dict:
     features["ema_alignment"] = 1.0 if (
         (price > ema20 and ema20 > ema50) or (price < ema20 and ema20 < ema50)
     ) else 0.0
-    features["score_dominance"] = max(bs, ss) / (bs + ss) if (bs + ss) > 0 else 0.5
+    features["score_dominance"] = max(bs, ss) / score_sum if score_sum > 0 else 0.5
     features["signal_confidence_product"] = (
         features["confidence"] * features["signal_strength"] / 100
         if features["signal_strength"] > 0 else 0.0
@@ -95,6 +101,16 @@ def build_features_from_dict(data: dict) -> dict:
     features["rsi_momentum_agreement"] = 1.0 if (
         (rsi > 50 and momentum > 0) or (rsi < 50 and momentum < 0)
     ) else 0.0
+
+    # Phase 4: Sentiment-Features
+    fg = features["fear_greed_index"]
+    features["fear_greed_normalized"] = (fg - 50) / 50
+    news_sent = features["news_sentiment_score"]
+    features["sentiment_momentum_agreement"] = 1.0 if (
+        (news_sent > 0.2 and momentum > 0) or
+        (news_sent < -0.2 and momentum < 0)
+    ) else 0.0
+    features["sentiment_regime_interaction"] = news_sent * abs(features["ema_spread"])
 
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
@@ -112,10 +128,11 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
 
     # Numerische Features
     for f in NUMERIC_FEATURES:
+        default_val = NUMERIC_DEFAULTS.get(f, 0.0)
         if f in df.columns:
-            features[f] = pd.to_numeric(df[f], errors="coerce").fillna(0)
+            features[f] = pd.to_numeric(df[f], errors="coerce").fillna(default_val)
         else:
-            features[f] = 0.0
+            features[f] = default_val
 
     # Boolean Features → 0/1
     for f in BOOLEAN_FEATURES:
@@ -196,6 +213,16 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
         ((features["rsi"] > 50) & (features["momentum"] > 0)) |
         ((features["rsi"] < 50) & (features["momentum"] < 0))
     ).astype(float)
+
+    # Phase 4: Sentiment-Features
+    fg = features["fear_greed_index"]
+    features["fear_greed_normalized"] = (fg - 50) / 50
+    ns = features["news_sentiment_score"]
+    mom = features["momentum"]
+    features["sentiment_momentum_agreement"] = (
+        ((ns > 0.2) & (mom > 0)) | ((ns < -0.2) & (mom < 0))
+    ).astype(float)
+    features["sentiment_regime_interaction"] = ns * features["ema_spread"].abs()
 
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
