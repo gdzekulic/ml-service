@@ -151,22 +151,21 @@ async def predict_batch_endpoint(request: BatchPredictRequest):
     results = predict_batch(items)
 
     # Predictions in DB speichern
-    for i, (signal, result) in enumerate(zip(request.signals, results)):
-        signal_id = signal.signal_id
-        if signal_id and "error" not in result:
+    for signal, result in zip(request.signals, results):
+        if signal.signal_id and "error" not in result:
             try:
                 from app.database import insert_prediction
                 insert_prediction(
-                    signal_id=signal_id,
+                    signal_id=signal.signal_id,
                     model_version=result.get("model_version", "unknown"),
                     prediction=result["prediction"],
                     confidence=result["probability"],
-                    features_used=items[i],
+                    features_used=signal.model_dump(),
                     probability=result["probability"],
                     feature_importance_top5=result.get("feature_importance_top5"),
                 )
             except Exception as e:
-                logger.error(f"Batch Prediction-Logging fehlgeschlagen fuer {signal_id}: {e}")
+                logger.error(f"Batch Prediction-Logging fehlgeschlagen fuer {signal.signal_id}: {e}")
 
     return {"predictions": results, "count": len(results)}
 

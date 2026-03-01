@@ -2,20 +2,17 @@
 
 import numpy as np
 import pandas as pd
-from typing import Union
 
 from app.config import (
     NUMERIC_FEATURES, BOOLEAN_FEATURES, DERIVED_FEATURES,
     CATEGORICAL_FEATURES,
 )
 
-# Mapping: day_of_week String → Nummer
+# Mapping: day_of_week String -> Nummer (lowercase keys + German abbreviations)
 DAY_MAP = {
     "monday": 0, "tuesday": 1, "wednesday": 2,
     "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
-    "Monday": 0, "Tuesday": 1, "Wednesday": 2,
-    "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6,
-    "Mo": 0, "Di": 1, "Mi": 2, "Do": 3, "Fr": 4, "Sa": 5, "So": 6,
+    "mo": 0, "di": 1, "mi": 2, "do": 3, "fr": 4, "sa": 5, "so": 6,
 }
 
 
@@ -187,7 +184,7 @@ def _parse_day_of_week(val) -> int:
     if isinstance(val, (int, float)):
         return int(val)
     if isinstance(val, str):
-        return DAY_MAP.get(val.strip(), 2)
+        return DAY_MAP.get(val.strip().lower(), 2)
     return 2
 
 

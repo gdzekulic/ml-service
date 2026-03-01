@@ -196,24 +196,20 @@ def train_model() -> dict:
 
     # 3. Chronologischer Split: Train / Validation / Test
     #    Optuna tuned auf Val, finale Metriken nur auf Test (kein Data Leakage)
-    if ENABLE_OPTUNA and len(df) >= 100:
-        split_train = int(len(df) * 0.6)
-        split_val = int(len(df) * 0.8)
-        X_train = X.iloc[:split_train]
-        X_val = X.iloc[split_train:split_val]
-        X_test = X.iloc[split_val:]
-        y_train = y.iloc[:split_train]
-        y_val = y.iloc[split_train:split_val]
-        y_test = y.iloc[split_val:]
-        split_idx = split_train
-        test_start_idx = split_val
+    n = len(df)
+    use_3way = ENABLE_OPTUNA and n >= 100
+    if use_3way:
+        split_idx = int(n * 0.6)
+        test_start_idx = int(n * 0.8)
+        X_train, X_val, X_test = X.iloc[:split_idx], X.iloc[split_idx:test_start_idx], X.iloc[test_start_idx:]
+        y_train, y_val, y_test = y.iloc[:split_idx], y.iloc[split_idx:test_start_idx], y.iloc[test_start_idx:]
         logger.info(f"3-Way Split: Train={len(X_train)}, Val={len(X_val)}, Test={len(X_test)}")
     else:
-        split_idx = int(len(df) * TRAIN_TEST_SPLIT)
+        split_idx = int(n * TRAIN_TEST_SPLIT)
+        test_start_idx = split_idx
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-        X_val, y_val = X_test, y_test  # Kein Optuna → Val=Test ist ok
-        test_start_idx = split_idx
+        X_val, y_val = X_test, y_test
         logger.info(f"2-Way Split: Train={len(X_train)}, Test={len(X_test)}")
 
     # 4. XGBoost Training (mit Klassen-Balancierung)
@@ -227,25 +223,21 @@ def train_model() -> dict:
 
     # Optuna Hyperparameter Tuning oder Default-Parameter
     used_optuna = False
-    early_stopping = XGB_EARLY_STOPPING
+    best_params = {
+        "n_estimators": XGB_N_ESTIMATORS,
+        "max_depth": XGB_MAX_DEPTH,
+        "learning_rate": XGB_LEARNING_RATE,
+        "subsample": XGB_SUBSAMPLE,
+        "colsample_bytree": XGB_COLSAMPLE_BYTREE,
+    }
 
-    if ENABLE_OPTUNA and len(X_train) >= 100:
+    if use_3way:
         try:
             logger.info(f"Starte Optuna Tuning ({OPTUNA_N_TRIALS} Trials)...")
             best_params = _optuna_tune(X_train, y_train, X_val, y_val, scale_pos_weight)
             used_optuna = True
-            early_stopping = 20
         except Exception as e:
             logger.warning(f"Optuna fehlgeschlagen, nutze Defaults: {e}")
-
-    if not used_optuna:
-        best_params = {
-            "n_estimators": XGB_N_ESTIMATORS,
-            "max_depth": XGB_MAX_DEPTH,
-            "learning_rate": XGB_LEARNING_RATE,
-            "subsample": XGB_SUBSAMPLE,
-            "colsample_bytree": XGB_COLSAMPLE_BYTREE,
-        }
 
     model = XGBClassifier(
         **best_params,
@@ -253,7 +245,7 @@ def train_model() -> dict:
         eval_metric="logloss",
         use_label_encoder=False,
         random_state=42,
-        early_stopping_rounds=early_stopping,
+        early_stopping_rounds=XGB_EARLY_STOPPING,
     )
 
     model.fit(
@@ -296,7 +288,7 @@ def train_model() -> dict:
     shap_imp = {}
     try:
         explainer = shap.TreeExplainer(model)
-        shap_sample = X_test.sample(min(200, len(X_test)), random_state=42) if len(X_test) > 200 else X_test
+        shap_sample = X_test.sample(min(200, len(X_test)), random_state=42)
         shap_values = explainer.shap_values(shap_sample)
         shap_mean_abs = np.abs(shap_values).mean(axis=0)
         shap_imp = dict(zip(feature_names, shap_mean_abs.tolist()))
@@ -372,7 +364,7 @@ def train_model() -> dict:
                 continue
             regime_mask = regime_col == regime_name
             regime_train_mask = regime_mask.iloc[:split_idx]
-            regime_test_mask = regime_mask.iloc[split_idx:]
+            regime_test_mask = regime_mask.iloc[test_start_idx:]
 
             n_train = int(regime_train_mask.sum())
             n_test = int(regime_test_mask.sum())
@@ -395,9 +387,9 @@ def train_model() -> dict:
                 subsample=0.8, colsample_bytree=0.8,
                 scale_pos_weight=r_spw,
                 eval_metric="logloss", use_label_encoder=False,
-                random_state=42, early_stopping_rounds=15,
+                random_state=42,
             )
-            r_model.fit(X_r_train, y_r_train, eval_set=[(X_r_test, y_r_test)], verbose=False)
+            r_model.fit(X_r_train, y_r_train, verbose=False)
 
             r_pred = r_model.predict(X_r_test)
             r_acc = accuracy_score(y_r_test, r_pred)
