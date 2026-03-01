@@ -37,11 +37,13 @@ NUMERIC_FEATURES = [
     "macd", "bb_percent_b", "atr_percent", "momentum",
     "ema20", "ema50", "price_at_signal", "risk_reward",
     "confidence", "signal_strength",
+    "score_15min_buy", "score_15min_sell",
 ]
 
 BOOLEAN_FEATURES = [
     "price_vs_ema20", "price_vs_ema50",
     "rsi_divergence_bull", "rsi_divergence_bear",
+    "mtf_alignment",
 ]
 
 DERIVED_FEATURES = [
@@ -52,6 +54,11 @@ DERIVED_FEATURES = [
     "rsi_extreme", "stoch_extreme", "bb_position_extreme",
     "macd_abs", "momentum_abs",
     "atr_momentum_interaction", "rsi_stoch_agreement", "trend_strength",
+    # Phase 3: Preis-Trend und Signal-Interaktionen
+    "ema_price_ratio_20", "ema_price_ratio_50",
+    "ema_alignment", "score_dominance",
+    "signal_confidence_product", "bb_atr_interaction",
+    "rsi_momentum_agreement",
 ]
 
 CATEGORICAL_FEATURES = {
@@ -63,4 +70,9 @@ CATEGORICAL_FEATURES = {
     "trend_direction": ["uptrend", "downtrend", "sideways"],
     "stoch_crossover": ["bullish", "bearish", "none"],
     "macd_crossover": ["bullish", "bearish", "none"],
+    "exchange": ["XETRA", "NASDAQ", "NYSE"],
+    "sector": [
+        "Technology", "Healthcare", "Financial", "Industrial",
+        "Consumer", "Energy", "Communication", "Other",
+    ],
 }

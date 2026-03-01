@@ -79,6 +79,23 @@ def build_features_from_dict(data: dict) -> dict:
     features["rsi_stoch_agreement"] = 1.0 if (rsi > 70 and stoch > 80) or (rsi < 30 and stoch < 20) else 0.0
     features["trend_strength"] = abs(features["ema_spread"])
 
+    # Phase 3: Preis-Trend und Signal-Interaktionen
+    features["ema_price_ratio_20"] = price / ema20 if ema20 > 0 else 1.0
+    features["ema_price_ratio_50"] = price / ema50 if ema50 > 0 else 1.0
+    features["ema_alignment"] = 1.0 if (
+        (price > ema20 and ema20 > ema50) or (price < ema20 and ema20 < ema50)
+    ) else 0.0
+    features["score_dominance"] = max(bs, ss) / (bs + ss) if (bs + ss) > 0 else 0.5
+    features["signal_confidence_product"] = (
+        features["confidence"] * features["signal_strength"] / 100
+        if features["signal_strength"] > 0 else 0.0
+    )
+    features["bb_atr_interaction"] = features["bb_percent_b"] * features["atr_percent"]
+    momentum = features["momentum"]
+    features["rsi_momentum_agreement"] = 1.0 if (
+        (rsi > 50 and momentum > 0) or (rsi < 50 and momentum < 0)
+    ) else 0.0
+
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
         actual_value = str(data.get(cat_name, "")).lower()
@@ -156,6 +173,29 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
         ((features["rsi"] < 30) & (features["stoch_k"] < 20))
     ).astype(float)
     features["trend_strength"] = features["ema_spread"].abs()
+
+    # Phase 3: Preis-Trend und Signal-Interaktionen
+    ema20_safe = features["ema20"].replace(0, np.nan)
+    ema50_safe = features["ema50"].replace(0, np.nan)
+    features["ema_price_ratio_20"] = (features["price_at_signal"] / ema20_safe).fillna(1.0)
+    features["ema_price_ratio_50"] = (features["price_at_signal"] / ema50_safe).fillna(1.0)
+    features["ema_alignment"] = (
+        ((features["price_at_signal"] > features["ema20"]) & (features["ema20"] > features["ema50"])) |
+        ((features["price_at_signal"] < features["ema20"]) & (features["ema20"] < features["ema50"]))
+    ).astype(float)
+    features["score_dominance"] = np.where(
+        score_sum > 0, np.maximum(bs, ss) / score_sum, 0.5
+    )
+    features["signal_confidence_product"] = np.where(
+        features["signal_strength"] > 0,
+        features["confidence"] * features["signal_strength"] / 100,
+        0.0,
+    )
+    features["bb_atr_interaction"] = features["bb_percent_b"] * features["atr_percent"]
+    features["rsi_momentum_agreement"] = (
+        ((features["rsi"] > 50) & (features["momentum"] > 0)) |
+        ((features["rsi"] < 50) & (features["momentum"] < 0))
+    ).astype(float)
 
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():

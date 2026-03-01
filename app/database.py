@@ -48,6 +48,8 @@ def load_training_data() -> pd.DataFrame:
             bb_squeeze,
             stoch_crossover, macd_crossover,
             market_regime, trend_direction,
+            exchange, sector, mtf_alignment,
+            score_15min_buy, score_15min_sell,
             day_of_week, time_of_day,
             was_correct
         FROM signals_extended
