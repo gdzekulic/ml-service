@@ -5,8 +5,9 @@ import pandas as pd
 
 from app.config import (
     NUMERIC_FEATURES, BOOLEAN_FEATURES, DERIVED_FEATURES,
-    CATEGORICAL_FEATURES,
+    TEMPORAL_FEATURES, CATEGORICAL_FEATURES,
 )
+from app.database import load_ticker_history, count_signals_today
 
 # Mapping: day_of_week String -> Nummer (lowercase keys + German abbreviations)
 DAY_MAP = {
@@ -19,6 +20,9 @@ DAY_MAP = {
 NUMERIC_DEFAULTS = {
     "fear_greed_index": 50.0,
 }
+
+# Temporal features that default to 0.5 instead of 0.0 (neutral baseline)
+TEMPORAL_NEUTRAL_DEFAULTS = {"ticker_win_rate_10", "ticker_last_outcome"}
 
 
 def _safe_float(val, default=0.0) -> float:
@@ -111,6 +115,49 @@ def build_features_from_dict(data: dict) -> dict:
         (news_sent < -0.2 and momentum < 0)
     ) else 0.0
     features["sentiment_regime_interaction"] = news_sent * abs(features["ema_spread"])
+
+    # Phase 5: Temporal Features (Lag/Delta/Rolling/Outcome aus DB-History)
+    ticker = data.get("ticker", "")
+    history = _load_history_safe(ticker)
+
+    if history:
+        prev = history[0]  # neuestes gemessenes Signal
+        features["rsi_lag_1"] = _safe_float(prev.get("rsi"))
+        features["buy_score_lag_1"] = _safe_float(prev.get("buy_score"))
+        features["momentum_lag_1"] = _safe_float(prev.get("momentum"))
+        features["atr_percent_lag_1"] = _safe_float(prev.get("atr_percent"))
+
+        features["rsi_delta"] = features["rsi"] - features["rsi_lag_1"]
+        features["buy_score_delta"] = features["buy_score"] - features["buy_score_lag_1"]
+        features["sell_score_delta"] = features["sell_score"] - _safe_float(prev.get("sell_score"))
+        features["momentum_delta"] = features["momentum"] - features["momentum_lag_1"]
+
+        # Rolling (max 5 Signale)
+        hist_slice = history[:5]
+        rsi_vals = [_safe_float(h.get("rsi")) for h in hist_slice]
+        bs_vals = [_safe_float(h.get("buy_score")) for h in hist_slice]
+        atr_vals = [_safe_float(h.get("atr_percent")) for h in hist_slice]
+
+        features["rsi_rolling_mean_5"] = np.mean(rsi_vals)
+        features["rsi_rolling_std_5"] = np.std(rsi_vals, ddof=0)
+        features["buy_score_rolling_mean_5"] = np.mean(bs_vals)
+        features["atr_percent_rolling_mean_5"] = np.mean(atr_vals)
+
+        # Outcome-History
+        measured = [h for h in history if h.get("was_correct") in ("true", "false")]
+        if measured:
+            wins = sum(1 for h in measured if h.get("was_correct") == "true")
+            features["ticker_win_rate_10"] = wins / len(measured)
+            features["ticker_last_outcome"] = 1.0 if measured[0].get("was_correct") == "true" else 0.0
+        else:
+            features["ticker_win_rate_10"] = 0.5
+            features["ticker_last_outcome"] = 0.5
+    else:
+        for f in TEMPORAL_FEATURES:
+            features[f] = 0.5 if f in TEMPORAL_NEUTRAL_DEFAULTS else 0.0
+
+    # consecutive_signals_today (unabhaengig von History, eigener DB-Query)
+    features["consecutive_signals_today"] = _count_signals_safe(ticker)
 
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
@@ -224,6 +271,67 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
     ).astype(float)
     features["sentiment_regime_interaction"] = ns * features["ema_spread"].abs()
 
+    # Phase 5: Temporal Features (Lag/Delta/Rolling/Outcome per Ticker)
+    if "ticker" in df.columns:
+        grp = df.groupby("ticker")
+
+        # Lag-Features (shift=1 → vorheriges Signal)
+        features["rsi_lag_1"] = grp["rsi"].shift(1).reindex(df.index).fillna(0.0).values
+        features["buy_score_lag_1"] = grp["buy_score"].shift(1).reindex(df.index).fillna(0.0).values
+        features["momentum_lag_1"] = grp["momentum"].shift(1).reindex(df.index).fillna(0.0).values
+        features["atr_percent_lag_1"] = grp["atr_percent"].shift(1).reindex(df.index).fillna(0.0).values
+
+        # Delta-Features
+        features["rsi_delta"] = features["rsi"] - features["rsi_lag_1"]
+        features["buy_score_delta"] = features["buy_score"] - features["buy_score_lag_1"]
+        sell_score_lag = grp["sell_score"].shift(1).reindex(df.index).fillna(0.0).values
+        features["sell_score_delta"] = features["sell_score"] - sell_score_lag
+        features["momentum_delta"] = features["momentum"] - features["momentum_lag_1"]
+
+        # Rolling-Features (Fenster=5, min_periods=1, shift(1) gegen Data Leakage)
+        features["rsi_rolling_mean_5"] = grp["rsi"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+        ).reindex(df.index).fillna(0.0).values
+        features["rsi_rolling_std_5"] = grp["rsi"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=1).std(ddof=0)
+        ).reindex(df.index).fillna(0.0).values
+        features["buy_score_rolling_mean_5"] = grp["buy_score"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+        ).reindex(df.index).fillna(0.0).values
+        features["atr_percent_rolling_mean_5"] = grp["atr_percent"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+        ).reindex(df.index).fillna(0.0).values
+
+        # Outcome-History: Win-Rate der letzten 10 gemessenen Signale
+        if "was_correct" in df.columns:
+            # shift(1) um Data Leakage zu verhindern
+            correct_bool = df["was_correct"].astype(str).str.lower().eq("true").astype(float)
+            shifted_correct = correct_bool.groupby(df["ticker"]).shift(1)
+
+            features["ticker_win_rate_10"] = shifted_correct.groupby(
+                df["ticker"]
+            ).transform(
+                lambda x: x.rolling(10, min_periods=1).mean()
+            ).fillna(0.5).values
+
+            features["ticker_last_outcome"] = shifted_correct.fillna(0.5).values
+        else:
+            features["ticker_win_rate_10"] = 0.5
+            features["ticker_last_outcome"] = 0.5
+
+        # consecutive_signals_today
+        if "timestamp" in df.columns:
+            ts = pd.to_datetime(df["timestamp"], errors="coerce")
+            signal_date = ts.dt.date
+            features["consecutive_signals_today"] = df.groupby(
+                [df["ticker"], signal_date]
+            ).cumcount().values.astype(float)
+        else:
+            features["consecutive_signals_today"] = 0.0
+    else:
+        for f in TEMPORAL_FEATURES:
+            features[f] = 0.5 if f in TEMPORAL_NEUTRAL_DEFAULTS else 0.0
+
     # Kategorische Features → One-Hot
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
         if cat_name in df.columns:
@@ -240,11 +348,34 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def get_feature_names() -> list:
     """Gibt die vollstaendige Feature-Liste zurueck."""
-    names = list(NUMERIC_FEATURES) + list(BOOLEAN_FEATURES) + list(DERIVED_FEATURES)
+    names = (
+        list(NUMERIC_FEATURES) + list(BOOLEAN_FEATURES)
+        + list(DERIVED_FEATURES) + list(TEMPORAL_FEATURES)
+    )
     for cat_name, possible_values in CATEGORICAL_FEATURES.items():
         for val in possible_values[1:]:
             names.append(f"{cat_name}_{val}")
     return names
+
+
+def _load_history_safe(ticker: str) -> list:
+    """Lade Ticker-History aus DB, bei Fehler leere Liste."""
+    if not ticker:
+        return []
+    try:
+        return load_ticker_history(ticker, n=10)
+    except Exception:
+        return []
+
+
+def _count_signals_safe(ticker: str) -> float:
+    """Zaehle heutige Signale, bei Fehler 0."""
+    if not ticker:
+        return 0.0
+    try:
+        return float(count_signals_today(ticker))
+    except Exception:
+        return 0.0
 
 
 def _parse_day_of_week(val) -> int:

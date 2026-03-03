@@ -66,6 +66,36 @@ def load_training_data() -> pd.DataFrame:
         conn.close()
 
 
+def load_ticker_history(ticker: str, n: int = 10) -> list[dict]:
+    """Lade letzte N Signale eines Tickers (neueste zuerst)."""
+    query = """
+        SELECT rsi, buy_score, sell_score, momentum, atr_percent,
+               was_correct, timestamp::date AS signal_date
+        FROM signals_extended
+        WHERE ticker = %s
+          AND outcome_status = 'measured'
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """
+    with get_cursor() as cur:
+        cur.execute(query, (ticker, n))
+        return cur.fetchall()
+
+
+def count_signals_today(ticker: str) -> int:
+    """Zaehle heutige Signale fuer einen Ticker."""
+    query = """
+        SELECT COUNT(*) AS cnt
+        FROM signals_extended
+        WHERE ticker = %s
+          AND timestamp::date = CURRENT_DATE
+    """
+    with get_cursor() as cur:
+        cur.execute(query, (ticker,))
+        row = cur.fetchone()
+        return row["cnt"] if row else 0
+
+
 def insert_model_performance(
     model_version: str,
     training_samples: int,

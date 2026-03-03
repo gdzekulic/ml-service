@@ -67,6 +67,21 @@ DERIVED_FEATURES = [
     "sentiment_regime_interaction",
 ]
 
+TEMPORAL_FEATURES = [
+    # Phase 5: Zeitreihen-Features
+    # Lag-Features (vorheriges Signal desselben Tickers)
+    "rsi_lag_1", "buy_score_lag_1", "momentum_lag_1", "atr_percent_lag_1",
+    # Delta-Features (Veraenderung zum vorherigen Signal)
+    "rsi_delta", "buy_score_delta", "sell_score_delta", "momentum_delta",
+    # Rolling-Features (Durchschnitt/Std letzter 5 Signale)
+    "rsi_rolling_mean_5", "rsi_rolling_std_5",
+    "buy_score_rolling_mean_5", "atr_percent_rolling_mean_5",
+    # Outcome-History (Ticker-Performance)
+    "ticker_win_rate_10", "ticker_last_outcome",
+    # Signal-Frequenz
+    "consecutive_signals_today",
+]
+
 CATEGORICAL_FEATURES = {
     "signal_type": ["BUY", "SELL", "WATCH_BUY", "WATCH_SELL", "NONE"],
     "market_regime": [
