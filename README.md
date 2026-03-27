@@ -70,8 +70,8 @@ pip install -r requirements.txt
 # Umgebungsvariablen setzen
 export DB_HOST=localhost
 export DB_PORT=5432
-export DB_NAME=trading_bot
-export DB_USER=trading_bot_user
+export DB_NAME=your_db_name
+export DB_USER=your_db_user
 export DB_PASSWORD=your_password
 
 # Service starten
@@ -89,7 +89,7 @@ docker run -d \
   --name ml-service \
   -p 8000:8000 \
   -e DB_HOST=postgres \
-  -e DB_USER=trading_bot_user \
+  -e DB_USER=your_db_user \
   -e DB_PASSWORD=your_password \
   -v ml-models:/app/models \
   ml-service:latest
@@ -443,8 +443,8 @@ Alle Einstellungen erfolgen ueber Umgebungsvariablen mit sinnvollen Standardwert
 |----------|----------|-------------|
 | `DB_HOST` | `localhost` | PostgreSQL Host |
 | `DB_PORT` | `5432` | PostgreSQL Port |
-| `DB_NAME` | `trading_bot` | Datenbankname |
-| `DB_USER` | `trading_bot_user` | Datenbankbenutzer |
+| `DB_NAME` | `your_db_name` | Datenbankname |
+| `DB_USER` | `your_db_user` | Datenbankbenutzer |
 | `DB_PASSWORD` | (leer) | Datenbankpasswort |
 
 ### Modell
@@ -504,8 +504,8 @@ services:
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_NAME=trading_bot
-      - DB_USER=trading_bot_user
+      - DB_NAME=your_db_name
+      - DB_USER=your_db_user
       - DB_PASSWORD=${DB_PASSWORD}
       - ENABLE_OPTUNA=true
       - OPTUNA_N_TRIALS=15
