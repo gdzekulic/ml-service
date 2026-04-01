@@ -116,6 +116,17 @@ def build_features_from_dict(data: dict) -> dict:
     ) else 0.0
     features["sentiment_regime_interaction"] = news_sent * abs(features["ema_spread"])
 
+    # Phase 6: Volumen-Features
+    vol_ratio = features.get("volume_ratio", 1.0)
+    vol_div = features.get("price_volume_div", 0)
+    features["volume_momentum_agreement"] = 1.0 if (
+        (vol_ratio > 1.2 and abs(momentum) > 1.0) or
+        (vol_ratio < 0.8 and abs(momentum) < 0.5)
+    ) else 0.0
+    features["volume_breakout_signal"] = 1.0 if (
+        vol_ratio > 1.5 and features.get("bb_squeeze", 0) == 1
+    ) else 0.0
+
     # Phase 5: Temporal Features (Lag/Delta/Rolling/Outcome aus DB-History)
     ticker = data.get("ticker", "")
     history = _load_history_safe(ticker)
@@ -270,6 +281,17 @@ def build_features_from_df(df: pd.DataFrame) -> pd.DataFrame:
         ((ns > 0.2) & (mom > 0)) | ((ns < -0.2) & (mom < 0))
     ).astype(float)
     features["sentiment_regime_interaction"] = ns * features["ema_spread"].abs()
+
+    # Phase 6: Volumen-Features
+    vol_ratio = features["volume_ratio"]
+    vol_div = features["price_volume_div"]
+    features["volume_momentum_agreement"] = (
+        ((vol_ratio > 1.2) & (mom.abs() > 1.0)) |
+        ((vol_ratio < 0.8) & (mom.abs() < 0.5))
+    ).astype(float)
+    features["volume_breakout_signal"] = (
+        (vol_ratio > 1.5) & (features["bb_squeeze"] == 1)
+    ).astype(float)
 
     # Phase 5: Temporal Features (Lag/Delta/Rolling/Outcome per Ticker)
     if "ticker" in df.columns:

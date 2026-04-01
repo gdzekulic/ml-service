@@ -39,6 +39,8 @@ NUMERIC_FEATURES = [
     "confidence", "signal_strength",
     "score_15min_buy", "score_15min_sell",
     "fear_greed_index", "news_sentiment_score", "news_count",
+    # Phase 6: Volumen
+    "volume_ratio",
 ]
 
 BOOLEAN_FEATURES = [
@@ -46,6 +48,8 @@ BOOLEAN_FEATURES = [
     "rsi_divergence_bull", "rsi_divergence_bear",
     "mtf_alignment",
     "company_news_found",
+    # Phase 6: Volumen
+    "price_volume_div",
 ]
 
 DERIVED_FEATURES = [
@@ -65,6 +69,9 @@ DERIVED_FEATURES = [
     "fear_greed_normalized",
     "sentiment_momentum_agreement",
     "sentiment_regime_interaction",
+    # Phase 6: Volumen-Interaktionen
+    "volume_momentum_agreement",
+    "volume_breakout_signal",
 ]
 
 TEMPORAL_FEATURES = [
