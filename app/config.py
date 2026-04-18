@@ -41,6 +41,11 @@ NUMERIC_FEATURES = [
     "fear_greed_index", "news_sentiment_score", "news_count",
     # Phase 6: Volumen
     "volume_ratio",
+    # Phase B2: Momentum-Beschleunigung (Spec 2026-04-18)
+    "rsi_velocity_15m", "rsi_velocity_1h",
+    "macd_hist_slope_15m", "macd_hist_slope_1h",
+    "roc_acceleration_15m", "volume_surge_pattern",
+    "mtf_momentum_lead",
 ]
 
 BOOLEAN_FEATURES = [
