@@ -58,8 +58,11 @@ def load_latest_model():
         logger.info("Kein Modell-Verzeichnis, ueberspringe Laden")
         return False
 
-    # Finde neuestes Modell
-    model_files = sorted(model_dir.glob("model_v*.joblib"), reverse=True)
+    # Finde neuestes Modell (Regime-Files ausschliessen, sonst picked glob Regime-Modelle als "latest")
+    model_files = sorted(
+        [f for f in model_dir.glob("model_v*.joblib") if "_regime_" not in f.name],
+        reverse=True,
+    )
     if not model_files:
         logger.info("Kein gespeichertes Modell gefunden")
         return False
